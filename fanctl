@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+import sys
+import os
+import time
+import glob
+import signal
+
+HWMON_BASE = "/sys/devices/platform/f71882fg.656"
+PWM_PATHS = [
+    os.path.join(HWMON_BASE, "pwm1"),
+    os.path.join(HWMON_BASE, "pwm2"),
+]
+PWM_ENABLE_PATHS = [
+    os.path.join(HWMON_BASE, "pwm1_enable"),
+    os.path.join(HWMON_BASE, "pwm2_enable"),
+]
+FAN_PATHS = [
+    os.path.join(HWMON_BASE, "fan1_input"),
+    os.path.join(HWMON_BASE, "fan2_input"),
+]
+SYS_TEMP_PATHS = [os.path.join(HWMON_BASE, f"temp{i}_input") for i in range(1, 4)]
+CPU_HWMON = "/sys/class/hwmon/hwmon1"
+DRIVE_HWMONS = [f"/sys/class/hwmon/hwmon{i}" for i in range(4, 12)]
+
+POLL_INTERVAL = 15
+PWM_HYSTERESIS = 5
+
+
+def read_int(path):
+    with open(path) as f:
+        return int(f.read().strip())
+
+
+def write_int(path, value):
+    with open(path, "w") as f:
+        f.write(str(value))
+
+
+def read_temp_c(path):
+    return read_int(path) / 1000.0
+
+
+def get_cpu_temps():
+    temps = []
+    for path in sorted(glob.glob(os.path.join(CPU_HWMON, "temp*_input"))):
+        try:
+            temps.append(read_temp_c(path))
+        except (OSError, ValueError):
+            pass
+    return temps
+
+
+def get_sys_temps():
+    temps = []
+    for path in SYS_TEMP_PATHS:
+        try:
+            temps.append(read_temp_c(path))
+        except (OSError, ValueError):
+            pass
+    return temps
+
+
+def get_drive_temps():
+    temps = []
+    for hwmon in DRIVE_HWMONS:
+        path = os.path.join(hwmon, "temp1_input")
+        try:
+            temps.append(read_temp_c(path))
+        except (OSError, ValueError):
+            pass
+    return temps
+
+
+def temp_to_pwm(temp_c):
+    if temp_c < 35:
+        return 60
+    elif temp_c < 45:
+        return int(60 + (temp_c - 35) * (120 - 60) / 10)
+    elif temp_c < 55:
+        return int(120 + (temp_c - 45) * (180 - 120) / 10)
+    elif temp_c < 65:
+        return int(180 + (temp_c - 55) * (255 - 180) / 10)
+    else:
+        return 255
+
+
+def set_manual():
+    for path in PWM_ENABLE_PATHS:
+        write_int(path, 1)
+
+
+def set_auto():
+    for path in PWM_ENABLE_PATHS:
+        write_int(path, 2)
+
+
+def set_pwm(value):
+    set_manual()
+    for path in PWM_PATHS:
+        write_int(path, value)
+
+
+def cmd_status():
+    cpu_temps = get_cpu_temps()
+    sys_temps = get_sys_temps()
+    drive_temps = get_drive_temps()
+
+    print("=== Temperatures ===")
+    print(f"CPU cores:  {', '.join(f'{t:.1f}°C' for t in cpu_temps) or '(none)'}")
+    print(f"System:     {', '.join(f'{t:.1f}°C' for t in sys_temps) or '(none)'}")
+    print(f"Drives:     {', '.join(f'{t:.1f}°C' for t in drive_temps) or '(none found)'}")
+
+    all_temps = cpu_temps + sys_temps + drive_temps
+    if all_temps:
+        print(f"Hottest:    {max(all_temps):.1f}°C")
+
+    print("\n=== Fans ===")
+    for i, path in enumerate(PWM_PATHS, 1):
+        try:
+            pwm = read_int(path)
+            rpm = read_int(FAN_PATHS[i - 1])
+            print(f"Fan {i}:      {rpm} RPM  PWM {pwm} ({pwm / 255 * 100:.0f}%)")
+        except (OSError, ValueError) as e:
+            print(f"Fan {i}:      (error: {e})")
+
+
+def cmd_auto():
+    set_auto()
+    print("Fan control returned to hardware (auto).")
+
+
+def cmd_speed(arg):
+    if arg.endswith("%"):
+        pct = float(arg[:-1])
+        if not 0 <= pct <= 100:
+            sys.exit("Error: percentage must be 0–100")
+        value = int(pct / 100 * 255)
+    else:
+        value = int(arg)
+        if not 0 <= value <= 255:
+            sys.exit("Error: PWM value must be 0–255")
+    set_pwm(value)
+    print(f"PWM set to {value} ({value / 255 * 100:.0f}%)")
+
+
+def cmd_run():
+    print("Starting fan control loop (Ctrl+C to stop)...")
+    set_manual()
+    current_pwm = None
+
+    # SIGTERM raises SystemExit, which triggers the finally block
+    signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
+
+    try:
+        while True:
+            all_temps = get_cpu_temps() + get_sys_temps() + get_drive_temps()
+
+            if not all_temps:
+                print("Warning: no temperatures read")
+            else:
+                hottest = max(all_temps)
+                target = temp_to_pwm(hottest)
+
+                if current_pwm is None or abs(target - current_pwm) > PWM_HYSTERESIS:
+                    for path in PWM_PATHS:
+                        write_int(path, target)
+                    current_pwm = target
+
+                rpms = []
+                for path in FAN_PATHS:
+                    try:
+                        rpms.append(str(read_int(path)))
+                    except (OSError, ValueError):
+                        rpms.append("?")
+
+                ts = time.strftime("%H:%M:%S")
+                print(f"[{ts}] hottest={hottest:.1f}°C  PWM={current_pwm}  RPM={'/'.join(rpms)}")
+
+            time.sleep(POLL_INTERVAL)
+
+    except KeyboardInterrupt:
+        print()
+    finally:
+        set_auto()
+        print("Restored hardware fan control.")
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.exit("Error: must be run as root")
+
+    if len(sys.argv) < 2:
+        sys.exit("Usage: fanctl <status|auto|speed <value>|run>")
+
+    cmd = sys.argv[1]
+
+    if cmd == "status":
+        cmd_status()
+    elif cmd == "auto":
+        cmd_auto()
+    elif cmd == "speed":
+        if len(sys.argv) < 3:
+            sys.exit("Usage: fanctl speed <percent%|pwm>")
+        cmd_speed(sys.argv[2])
+    elif cmd == "run":
+        cmd_run()
+    else:
+        sys.exit(f"Unknown command: {cmd}")
+
+
+if __name__ == "__main__":
+    main()
