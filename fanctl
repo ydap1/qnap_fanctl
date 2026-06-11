@@ -143,6 +143,23 @@ def cmd_speed(arg):
     print(f"PWM set to {value} ({value / 255 * 100:.0f}%)")
 
 
+def cmd_help():
+    print(
+        "Usage: fanctl <command>\n"
+        "\n"
+        "Commands:\n"
+        "  status         Show temps (CPU, system, drives), PWM values, and fan RPMs\n"
+        "  auto           Return fan control to hardware\n"
+        "  speed <value>  Set fan speed: percentage (e.g. 45%) or raw PWM (0–255)\n"
+        "  run            Start foreground control loop (Ctrl+C to stop)\n"
+        "  help           Show this message\n"
+        "\n"
+        "Fan curve (run mode):\n"
+        "  <35°C → PWM 60   35–45°C → 60–120   45–55°C → 120–180\n"
+        "  55–65°C → 180–255   >65°C → PWM 255\n"
+    )
+
+
 def cmd_run():
     print("Starting fan control loop (Ctrl+C to stop)...")
     set_manual()
@@ -190,11 +207,14 @@ def main():
         sys.exit("Error: must be run as root")
 
     if len(sys.argv) < 2:
-        sys.exit("Usage: fanctl <status|auto|speed <value>|run>")
+        cmd_help()
+        sys.exit(1)
 
     cmd = sys.argv[1]
 
-    if cmd == "status":
+    if cmd in ("help", "-h", "--help"):
+        cmd_help()
+    elif cmd == "status":
         cmd_status()
     elif cmd == "auto":
         cmd_auto()
