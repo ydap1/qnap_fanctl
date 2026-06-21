@@ -9,17 +9,14 @@ HWMON_BASE = "/sys/devices/platform/f71882fg.656"
 PWM_PATHS = [
     os.path.join(HWMON_BASE, "pwm1"),
     os.path.join(HWMON_BASE, "pwm2"),
-    os.path.join(HWMON_BASE, "pwm3"),
 ]
 PWM_ENABLE_PATHS = [
     os.path.join(HWMON_BASE, "pwm1_enable"),
     os.path.join(HWMON_BASE, "pwm2_enable"),
-    os.path.join(HWMON_BASE, "pwm3_enable"),
 ]
 FAN_PATHS = [
     os.path.join(HWMON_BASE, "fan1_input"),
     os.path.join(HWMON_BASE, "fan2_input"),
-    os.path.join(HWMON_BASE, "fan3_input"),
 ]
 SYS_TEMP_PATHS = [os.path.join(HWMON_BASE, f"temp{i}_input") for i in range(1, 4)]
 CPU_HWMON = "/sys/class/hwmon/hwmon1"
